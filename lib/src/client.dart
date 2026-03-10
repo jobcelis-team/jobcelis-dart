@@ -100,9 +100,13 @@ class JobcelisClient {
   // ── Webhooks ──────────────────────────────────────────────────────────
 
   /// Create a webhook.
-  Future<Map<String, dynamic>> createWebhook(String url, {Map<String, dynamic>? extra}) async {
+  ///
+  /// [rateLimit] - Optional rate limiting configuration with keys
+  /// `max_per_second` and/or `max_per_minute`.
+  Future<Map<String, dynamic>> createWebhook(String url, {Map<String, dynamic>? extra, Map<String, dynamic>? rateLimit}) async {
     final body = <String, dynamic>{'url': url};
     if (extra != null) body.addAll(extra);
+    if (rateLimit != null) body['rate_limit'] = rateLimit;
     return _post('/api/v1/webhooks', body);
   }
 
@@ -117,7 +121,11 @@ class JobcelisClient {
   }
 
   /// Update a webhook.
-  Future<Map<String, dynamic>> updateWebhook(String webhookId, Map<String, dynamic> data) async {
+  ///
+  /// [rateLimit] - Optional rate limiting configuration with keys
+  /// `max_per_second` and/or `max_per_minute`.
+  Future<Map<String, dynamic>> updateWebhook(String webhookId, Map<String, dynamic> data, {Map<String, dynamic>? rateLimit}) async {
+    if (rateLimit != null) data['rate_limit'] = rateLimit;
     return _patch('/api/v1/webhooks/$webhookId', data);
   }
 
@@ -134,6 +142,11 @@ class JobcelisClient {
   /// List available webhook templates.
   Future<Map<String, dynamic>> webhookTemplates() async {
     return _get('/api/v1/webhooks/templates');
+  }
+
+  /// Send a test delivery to a webhook.
+  Future<Map<String, dynamic>> testWebhook(String webhookId) async {
+    return _post('/api/v1/webhooks/$webhookId/test', {});
   }
 
   // ── Deliveries ────────────────────────────────────────────────────────
@@ -452,6 +465,45 @@ class JobcelisClient {
     return _get('/api/v1/audit-log', params: {'limit': '$limit', if (cursor != null) 'cursor': cursor});
   }
 
+  // ── Embed Tokens ────────────────────────────────────────────────────
+
+  /// List embed tokens.
+  Future<Map<String, dynamic>> listEmbedTokens() async {
+    return _get('/api/v1/embed/tokens');
+  }
+
+  /// Create an embed token.
+  Future<Map<String, dynamic>> createEmbedToken(Map<String, dynamic> config) async {
+    return _post('/api/v1/embed/tokens', config);
+  }
+
+  /// Revoke an embed token.
+  Future<void> revokeEmbedToken(String id) async {
+    await _delete('/api/v1/embed/tokens/$id');
+  }
+
+  // ── Notification Channels ────────────────────────────────────────────
+
+  /// Get the notification channel configuration.
+  Future<Map<String, dynamic>> getNotificationChannel() async {
+    return _get('/api/v1/notification-channels');
+  }
+
+  /// Create or update notification channel configuration.
+  Future<Map<String, dynamic>> upsertNotificationChannel(Map<String, dynamic> config) async {
+    return _put('/api/v1/notification-channels', config);
+  }
+
+  /// Delete the notification channel configuration.
+  Future<void> deleteNotificationChannel() async {
+    await _delete('/api/v1/notification-channels');
+  }
+
+  /// Test the notification channel configuration.
+  Future<Map<String, dynamic>> testNotificationChannel() async {
+    return _post('/api/v1/notification-channels/test', {});
+  }
+
   // ── Export ─────────────────────────────────────────────────────────────
 
   /// Export events as CSV or JSON. Returns raw string.
@@ -511,6 +563,28 @@ class JobcelisClient {
     await _delete('/api/v1/me/object');
   }
 
+  // ── Retention & Purge ──────────────────────────────────────────────────
+
+  /// Get current retention policy.
+  Future<Map<String, dynamic>> getRetentionPolicy() async {
+    return _get('/api/v1/retention');
+  }
+
+  /// Update retention policy.
+  Future<Map<String, dynamic>> updateRetentionPolicy(Map<String, dynamic> policy) async {
+    return _patch('/api/v1/retention', policy);
+  }
+
+  /// Preview a purge operation.
+  Future<Map<String, dynamic>> previewPurge(Map<String, dynamic> params) async {
+    return _post('/api/v1/purge/preview', params);
+  }
+
+  /// Execute a purge operation.
+  Future<Map<String, dynamic>> purgeData(Map<String, dynamic> params) async {
+    return _post('/api/v1/purge', params);
+  }
+
   // ── Health ─────────────────────────────────────────────────────────────
 
   /// Check API health.
@@ -531,6 +605,10 @@ class JobcelisClient {
 
   Future<Map<String, dynamic>> _post(String path, Map<String, dynamic> body) async {
     return _request('POST', path, body: body);
+  }
+
+  Future<Map<String, dynamic>> _put(String path, Map<String, dynamic> body) async {
+    return _request('PUT', path, body: body);
   }
 
   Future<Map<String, dynamic>> _patch(String path, Map<String, dynamic> body) async {
@@ -585,6 +663,9 @@ class JobcelisClient {
         break;
       case 'POST':
         response = await _httpClient.post(uri, headers: headers, body: encodedBody);
+        break;
+      case 'PUT':
+        response = await _httpClient.put(uri, headers: headers, body: encodedBody);
         break;
       case 'PATCH':
         response = await _httpClient.patch(uri, headers: headers, body: encodedBody);
