@@ -1,0 +1,49 @@
+# Publishes the tagged version to pub.dev with automated publishing (GitHub OIDC,
+# no token). Started by release.yml, or by pushing a vX.Y.Z tag yourself.
+# Configured on pub.dev: Admin > Automated publishing, repository
+# jobcelis-team/jobcelis-dart, tag pattern v{{version}}, workflow_dispatch enabled.
+name: Publish
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Already published?
+        id: check
+        run: |
+          VERSION=$(grep -m1 '^version:' pubspec.yaml | awk '{print $2}')
+          if [ "${GITHUB_REF_NAME}" != "v$VERSION" ]; then
+            echo "::error::Run this on the tag v$VERSION (got ${GITHUB_REF_NAME})."
+            exit 1
+          fi
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://pub.dev/api/packages/jobcelis/versions/$VERSION")
+          if [ "$CODE" = "200" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "$VERSION is already published: nothing to do"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # setup-dart fetches the OIDC token that pub.dev accepts
+      - uses: dart-lang/setup-dart@v1
+        if: steps.check.outputs.publish == 'true'
+        with:
+          sdk: "3.3.0"
+
+      - name: Publish
+        if: steps.check.outputs.publish == 'true'
+        run: dart pub get && dart pub publish --force

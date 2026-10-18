@@ -330,3 +330,7 @@ if (WebhookVerifier.verify('your_webhook_secret', body, signature)) {
 ## License
 
 BSL-1.1 (Business Source License)
+
+## Releasing
+
+Bump the version in `pubspec.yaml` and merge to `main`. The [Release workflow](.github/workflows/release.yml) tags the commit and the [Publish workflow](.github/workflows/publish.yml) publishes it to pub.dev with automated publishing (no token). Changes that do not bump the version publish nothing.
