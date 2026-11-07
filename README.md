@@ -333,4 +333,4 @@ BSL-1.1 (Business Source License)
 
 ## Releasing
 
-Bump the version in `pubspec.yaml` and merge to `main`. The [Release workflow](.github/workflows/release.yml) tags the commit and the [Publish workflow](.github/workflows/publish.yml) publishes it to pub.dev with automated publishing (no token). Changes that do not bump the version publish nothing.
+Merge to `main`: the [Release workflow](.github/workflows/release.yml) publishes every change to the package as the next patch version (1.3.1 → 1.3.2) to pub.dev (the [Publish workflow](.github/workflows/publish.yml) publishes the tag), writes the version into `pubspec.yaml` and tags the commit. Changes to docs, tests or CI publish nothing. For a minor or major version, raise it in `pubspec.yaml` in the same pull request. Every pull request runs [CI](.github/workflows/ci.yml).
