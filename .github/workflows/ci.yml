@@ -21,3 +21,6 @@ jobs:
 
       - name: Analyze
         run: dart pub get && dart analyze lib
+
+      - name: Test
+        run: dart test

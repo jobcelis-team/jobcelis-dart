@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'exception.dart';
 
@@ -10,22 +11,46 @@ import 'exception.dart';
 /// final client = JobcelisClient(apiKey: 'your_api_key');
 /// final event = await client.sendEvent('order.created', {'order_id': '123'});
 /// ```
+///
+/// Requests that fail with a network error or HTTP 429, 502, 503 or 504 are
+/// retried automatically with exponential backoff (see [maxRetries]).
 class JobcelisClient {
+  /// Default number of automatic retries (about 60 seconds of backoff in total).
+  static const int defaultMaxRetries = 6;
+
+  static const Duration _maxBackoff = Duration(seconds: 30);
+  static const Duration _maxRetryAfter = Duration(seconds: 60);
+  static const Set<int> _retryableStatuses = {429, 502, 503, 504};
+  static const Set<String> _idempotentMethods = {'GET', 'PUT', 'PATCH', 'DELETE', 'HEAD'};
+
   final String _apiKey;
   final String _baseURL;
   final http.Client _httpClient;
+  final Random _random = Random.secure();
   String? _authToken;
+
+  /// Maximum number of automatic retries for a request. `0` disables retries.
+  final int maxRetries;
+
+  /// Base delay of the exponential backoff: retry `n` waits
+  /// `min(30 s, retryBaseDelay * 2^(n-1))` plus or minus 20 % jitter.
+  final Duration retryBaseDelay;
 
   /// Create a new Jobcelis client.
   ///
   /// [apiKey] - Your Jobcelis API key.
   /// [baseURL] - Base URL of the Jobcelis API (default: `https://jobcelis.com`).
   /// [httpClient] - Optional HTTP client (useful for testing).
+  /// [maxRetries] - Maximum automatic retries per request (default: 6, `0` disables retries).
+  /// [retryBaseDelay] - Base delay of the exponential backoff (default: 1 second).
   JobcelisClient({
     required String apiKey,
     String baseURL = 'https://jobcelis.com',
     http.Client? httpClient,
-  })  : _apiKey = apiKey,
+    this.maxRetries = defaultMaxRetries,
+    this.retryBaseDelay = const Duration(seconds: 1),
+  })  : assert(maxRetries >= 0, 'maxRetries must not be negative'),
+        _apiKey = apiKey,
         _baseURL = baseURL.endsWith('/') ? baseURL.substring(0, baseURL.length - 1) : baseURL,
         _httpClient = httpClient ?? http.Client();
 
@@ -66,13 +91,29 @@ class JobcelisClient {
   // ── Events ────────────────────────────────────────────────────────────
 
   /// Send a single event.
-  Future<Map<String, dynamic>> sendEvent(String topic, Map<String, dynamic> payload) async {
-    return _post('/api/v1/events', {'topic': topic, 'payload': payload});
+  ///
+  /// The request carries an `X-Idempotency-Key` header so that automatic
+  /// retries can never create a duplicate event. Pass [idempotencyKey] to use
+  /// your own key; otherwise a random UUID v4 is generated for the call.
+  Future<Map<String, dynamic>> sendEvent(String topic, Map<String, dynamic> payload, {String? idempotencyKey}) async {
+    return _request(
+      'POST',
+      '/api/v1/events',
+      body: {'topic': topic, 'payload': payload},
+      extraHeaders: {'X-Idempotency-Key': idempotencyKey ?? _uuidV4()},
+    );
   }
 
   /// Send up to 1000 events in a batch.
+  ///
+  /// Every event without an `idempotency_key` gets a random UUID v4 one, so
+  /// that automatic retries can never create duplicate events.
   Future<Map<String, dynamic>> sendEvents(List<Map<String, dynamic>> events) async {
-    return _post('/api/v1/events/batch', {'events': events});
+    final items = [
+      for (final event in events)
+        event['idempotency_key'] == null ? {...event, 'idempotency_key': _uuidV4()} : event,
+    ];
+    return _request('POST', '/api/v1/events/batch', body: {'events': items}, idempotent: true);
   }
 
   /// Get event details.
@@ -638,7 +679,7 @@ class JobcelisClient {
       if (_authToken != null) 'Authorization': 'Bearer $_authToken',
     };
 
-    final response = await _httpClient.get(uri, headers: headers);
+    final response = await _sendWithRetry('GET', uri, headers, null);
 
     if (response.statusCode >= 400) {
       throw JobcelisException(response.statusCode, response.body);
@@ -649,47 +690,129 @@ class JobcelisClient {
 
   Future<Map<String, dynamic>> _publicPost(String path, Map<String, dynamic> body) async {
     final uri = Uri.parse('$_baseURL$path');
-    final response = await _httpClient.post(
+    final response = await _sendWithRetry(
+      'POST',
       uri,
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(body),
+      {'Content-Type': 'application/json'},
+      jsonEncode(body),
     );
     return _handleResponse(response);
   }
 
-  Future<Map<String, dynamic>> _request(String method, String path, {Map<String, String>? params, Map<String, dynamic>? body}) async {
+  Future<Map<String, dynamic>> _request(
+    String method,
+    String path, {
+    Map<String, String>? params,
+    Map<String, dynamic>? body,
+    Map<String, String>? extraHeaders,
+    bool idempotent = false,
+  }) async {
     final uri = _buildUri(path, params);
     final headers = <String, String>{
       'Content-Type': 'application/json',
       'Accept': 'application/json',
       'X-Api-Key': _apiKey,
       if (_authToken != null) 'Authorization': 'Bearer $_authToken',
+      ...?extraHeaders,
     };
 
-    http.Response response;
     final encodedBody = body != null ? jsonEncode(body) : null;
+    final response = await _sendWithRetry(method, uri, headers, encodedBody, idempotent: idempotent);
+    return _handleResponse(response);
+  }
 
-    switch (method) {
-      case 'GET':
-        response = await _httpClient.get(uri, headers: headers);
-        break;
-      case 'POST':
-        response = await _httpClient.post(uri, headers: headers, body: encodedBody);
-        break;
-      case 'PUT':
-        response = await _httpClient.put(uri, headers: headers, body: encodedBody);
-        break;
-      case 'PATCH':
-        response = await _httpClient.patch(uri, headers: headers, body: encodedBody);
-        break;
-      case 'DELETE':
-        response = await _httpClient.delete(uri, headers: headers);
-        break;
-      default:
-        throw ArgumentError('Unsupported HTTP method: $method');
+  /// Sends the request, retrying network errors and HTTP 429/502/503/504.
+  ///
+  /// POST requests are retried on network errors only when they are
+  /// idempotent (they carry an idempotency key), because the server may have
+  /// processed them already.
+  Future<http.Response> _sendWithRetry(
+    String method,
+    Uri uri,
+    Map<String, String> headers,
+    String? body, {
+    bool idempotent = false,
+  }) async {
+    final retryOnNetworkError = idempotent ||
+        _idempotentMethods.contains(method) ||
+        headers.keys.any((k) => k.toLowerCase() == 'x-idempotency-key');
+
+    for (var attempt = 0;; attempt++) {
+      final http.Response response;
+      try {
+        final request = http.Request(method, uri)..headers.addAll(headers);
+        if (body != null) request.body = body;
+        response = await http.Response.fromStream(await _httpClient.send(request));
+      } on Exception {
+        // Exceptions from the HTTP client are transport failures (connection
+        // refused/reset, DNS, TLS, timeouts).
+        if (!retryOnNetworkError || attempt >= maxRetries) rethrow;
+        await Future<void>.delayed(_backoff(attempt + 1));
+        continue;
+      }
+
+      if (!_retryableStatuses.contains(response.statusCode) || attempt >= maxRetries) {
+        return response;
+      }
+      await Future<void>.delayed(_retryAfter(response) ?? _backoff(attempt + 1));
+    }
+  }
+
+  /// Delay before retry [n] (1-based): `min(30 s, base * 2^(n-1))` ± 20 % jitter.
+  Duration _backoff(int n) {
+    final exp = retryBaseDelay.inMicroseconds * pow(2, min(n - 1, 32));
+    final capped = min(exp.toDouble(), _maxBackoff.inMicroseconds.toDouble());
+    final jitter = 1 + (_random.nextDouble() * 0.4 - 0.2);
+    return Duration(microseconds: (capped * jitter).round());
+  }
+
+  /// Parses `Retry-After` (seconds or an HTTP date), capped at 60 seconds.
+  Duration? _retryAfter(http.Response response) {
+    final value = response.headers['retry-after']?.trim();
+    if (value == null || value.isEmpty) return null;
+
+    Duration? delay;
+    final seconds = num.tryParse(value);
+    if (seconds != null) {
+      delay = Duration(microseconds: (seconds * Duration.microsecondsPerSecond).round());
+    } else {
+      final date = _parseHttpDate(value);
+      if (date == null) return null;
+      delay = date.difference(DateTime.now().toUtc());
     }
 
-    return _handleResponse(response);
+    if (delay.isNegative) return Duration.zero;
+    return delay > _maxRetryAfter ? _maxRetryAfter : delay;
+  }
+
+  static const List<String> _months = [
+    'jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
+  ];
+
+  /// Parses an RFC 7231 IMF-fixdate such as `Sun, 06 Nov 1994 08:49:37 GMT`.
+  static DateTime? _parseHttpDate(String value) {
+    final match = RegExp(r'^\w{3}, (\d{1,2}) (\w{3}) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT$').firstMatch(value);
+    if (match == null) return null;
+    final month = _months.indexOf(match.group(2)!.toLowerCase());
+    if (month < 0) return null;
+    return DateTime.utc(
+      int.parse(match.group(3)!),
+      month + 1,
+      int.parse(match.group(1)!),
+      int.parse(match.group(4)!),
+      int.parse(match.group(5)!),
+      int.parse(match.group(6)!),
+    );
+  }
+
+  /// Generates a random UUID version 4.
+  String _uuidV4() {
+    final bytes = List<int>.generate(16, (_) => _random.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-'
+        '${hex.substring(16, 20)}-${hex.substring(20)}';
   }
 
   Map<String, dynamic> _handleResponse(http.Response response) {

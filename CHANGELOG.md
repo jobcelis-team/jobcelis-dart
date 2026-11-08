@@ -1,3 +1,8 @@
+## 1.4.0
+
+- Automatic retries with exponential backoff for network errors and HTTP 429/502/503/504 (`maxRetries`, default 6)
+- `sendEvent()` sends an `X-Idempotency-Key` (generated, or the new `idempotencyKey` argument) and `sendEvents()` adds an `idempotency_key` to every event without one, so retries never duplicate events
+
 ## 1.3.0
 
 - Added `updateTokenRestrictions()` to limit the API token to scopes and client IPs
