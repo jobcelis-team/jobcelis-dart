@@ -43,6 +43,25 @@ client.close();
 > final client = JobcelisClient(apiKey: 'your_api_key', baseURL: 'https://your-instance.example.com');
 > ```
 
+## Retries
+
+The client retries failed requests automatically, so a short outage (such as a deploy) does not lose your events:
+
+- Network errors (connection refused or reset, DNS, TLS, timeouts) and HTTP 429, 502, 503 and 504 are retried.
+- GET, PUT, PATCH and DELETE are retried on all of them. POST is retried on 429/502/503/504, and on network errors only when it carries an idempotency key.
+- Up to 6 retries by default with exponential backoff (1 s, 2 s, 4 s, 8 s, 16 s, 30 s, ±20 % jitter, about 60 s in total). A `Retry-After` header is honoured (up to 60 s).
+- `sendEvent()` sends an `X-Idempotency-Key` header (a random UUID unless you pass `idempotencyKey:`), and `sendEvents()` adds an `idempotency_key` to every event that has none, so a retry never creates a duplicate event.
+
+```dart
+// Change the number of retries, or pass 0 to disable them
+final client = JobcelisClient(apiKey: 'your_api_key', maxRetries: 3);
+
+// Use your own idempotency key
+await client.sendEvent('order.created', {'order_id': '123'}, idempotencyKey: 'order-123-created');
+```
+
+After the last retry the client throws the same `JobcelisException` (or HTTP client exception) it would throw without retries.
+
 ## Authentication
 
 The auth methods do not require an API key. Use them to register, log in, and manage JWT tokens.
