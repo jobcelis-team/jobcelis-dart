@@ -4,6 +4,11 @@ Official Dart/Flutter SDK for the [Jobcelis](https://jobcelis.com) Event Infrast
 
 All API calls go to `https://jobcelis.com` by default -- you only need your API key to get started.
 
+> **Keep your API key on the server.** The project API key is a secret with full access to
+> your project. Do not embed it in a Flutter or other client app you distribute: anyone can
+> extract it from the app. Call Jobcelis from your own backend, or give the app a short-lived,
+> scoped embed token (`createEmbedToken`) instead.
+
 ## Installation
 
 ```yaml
@@ -49,6 +54,7 @@ The client retries failed requests automatically, so a short outage (such as a d
 
 - Network errors (connection refused or reset, DNS, TLS, timeouts) and HTTP 429, 502, 503 and 504 are retried.
 - GET, PUT, PATCH and DELETE are retried on all of them. POST is retried on 429/502/503/504, and on network errors only when it carries an idempotency key.
+- Each attempt has a 30-second time limit (`timeout:`); an attempt that runs out of time is treated as a network error.
 - Up to 6 retries by default with exponential backoff (1 s, 2 s, 4 s, 8 s, 16 s, 30 s, ±20 % jitter, about 60 s in total). A `Retry-After` header is honoured (up to 60 s).
 - `sendEvent()` sends an `X-Idempotency-Key` header (a random UUID unless you pass `idempotencyKey:`), and `sendEvents()` adds an `idempotency_key` to every event that has none, so a retry never creates a duplicate event.
 
@@ -189,7 +195,7 @@ final preview = await client.cronPreview('0 9 * * *', count: 10);
 final pipeline = await client.createPipeline('order-processing', ['order.created'], [
   {'type': 'filter', 'config': {'field': 'amount', 'gt': 100}},
   {'type': 'transform', 'config': {'add_field': 'priority', 'value': 'high'}},
-]);
+], webhookId: 'wh_abc123'); // webhookId is required by the API: where the pipeline delivers
 
 final pipelines = await client.listPipelines(limit: 50);
 final p = await client.getPipeline('pipe_abc123');
@@ -197,7 +203,7 @@ await client.updatePipeline('pipe_abc123', {'name': 'order-processing-v2'});
 await client.deletePipeline('pipe_abc123');
 
 // Test a pipeline with a sample payload
-final result = await client.testPipeline('pipe_abc123', {'topic': 'order.created', 'payload': {'id': '1'}});
+final result = await client.testPipeline('pipe_abc123', {'id': '1', 'amount': 150});
 ```
 
 ## Event Schemas
@@ -305,7 +311,7 @@ await client.exportAuditLog(format: 'csv');
 final consents = await client.getConsents();
 await client.acceptConsent('marketing');
 final myData = await client.exportMyData();
-await client.restrictProcessing();
+await client.restrictProcessing('your_account_password');
 await client.liftRestriction();
 await client.objectToProcessing();
 await client.restoreConsent();
@@ -315,7 +321,7 @@ await client.restoreConsent();
 
 ```dart
 final health = await client.health();
-final status = await client.status();
+final status = await client.status(); // same JSON as health(): healthy, degraded or unhealthy
 ```
 
 ## Error Handling

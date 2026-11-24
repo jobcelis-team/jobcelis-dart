@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:http/http.dart' as http;
@@ -32,6 +33,11 @@ class JobcelisClient {
   /// Maximum number of automatic retries for a request. `0` disables retries.
   final int maxRetries;
 
+  /// Time limit for one HTTP attempt (connecting, sending and reading the
+  /// response). A timed-out attempt counts as a network error: it is retried
+  /// like one, and the last one throws a [TimeoutException].
+  final Duration timeout;
+
   /// Base delay of the exponential backoff: retry `n` waits
   /// `min(30 s, retryBaseDelay * 2^(n-1))` plus or minus 20 % jitter.
   final Duration retryBaseDelay;
@@ -43,12 +49,14 @@ class JobcelisClient {
   /// [httpClient] - Optional HTTP client (useful for testing).
   /// [maxRetries] - Maximum automatic retries per request (default: 6, `0` disables retries).
   /// [retryBaseDelay] - Base delay of the exponential backoff (default: 1 second).
+  /// [timeout] - Time limit for each HTTP attempt (default: 30 seconds).
   JobcelisClient({
     required String apiKey,
     String baseURL = 'https://jobcelis.com',
     http.Client? httpClient,
     this.maxRetries = defaultMaxRetries,
     this.retryBaseDelay = const Duration(seconds: 1),
+    this.timeout = const Duration(seconds: 30),
   })  : assert(maxRetries >= 0, 'maxRetries must not be negative'),
         _apiKey = apiKey,
         _baseURL = baseURL.endsWith('/') ? baseURL.substring(0, baseURL.length - 1) : baseURL,
@@ -118,7 +126,7 @@ class JobcelisClient {
 
   /// Get event details.
   Future<Map<String, dynamic>> getEvent(String eventId) async {
-    return _get('/api/v1/events/$eventId');
+    return _get('/api/v1/events/${_seg(eventId)}');
   }
 
   /// List events with cursor pagination.
@@ -128,7 +136,7 @@ class JobcelisClient {
 
   /// Delete an event.
   Future<void> deleteEvent(String eventId) async {
-    await _delete('/api/v1/events/$eventId');
+    await _delete('/api/v1/events/${_seg(eventId)}');
   }
 
   // ── Simulate ──────────────────────────────────────────────────────────
@@ -153,7 +161,7 @@ class JobcelisClient {
 
   /// Get webhook details.
   Future<Map<String, dynamic>> getWebhook(String webhookId) async {
-    return _get('/api/v1/webhooks/$webhookId');
+    return _get('/api/v1/webhooks/${_seg(webhookId)}');
   }
 
   /// List webhooks.
@@ -167,17 +175,17 @@ class JobcelisClient {
   /// `max_per_second` and/or `max_per_minute`.
   Future<Map<String, dynamic>> updateWebhook(String webhookId, Map<String, dynamic> data, {Map<String, dynamic>? rateLimit}) async {
     if (rateLimit != null) data['rate_limit'] = rateLimit;
-    return _patch('/api/v1/webhooks/$webhookId', data);
+    return _patch('/api/v1/webhooks/${_seg(webhookId)}', data);
   }
 
   /// Delete a webhook.
   Future<void> deleteWebhook(String webhookId) async {
-    await _delete('/api/v1/webhooks/$webhookId');
+    await _delete('/api/v1/webhooks/${_seg(webhookId)}');
   }
 
   /// Get health status for a webhook.
   Future<Map<String, dynamic>> webhookHealth(String webhookId) async {
-    return _get('/api/v1/webhooks/$webhookId/health');
+    return _get('/api/v1/webhooks/${_seg(webhookId)}/health');
   }
 
   /// List available webhook templates.
@@ -187,7 +195,7 @@ class JobcelisClient {
 
   /// Send a test delivery to a webhook.
   Future<Map<String, dynamic>> testWebhook(String webhookId) async {
-    return _post('/api/v1/webhooks/$webhookId/test', {});
+    return _post('/api/v1/webhooks/${_seg(webhookId)}/test', {});
   }
 
   // ── Deliveries ────────────────────────────────────────────────────────
@@ -203,7 +211,7 @@ class JobcelisClient {
 
   /// Retry a failed delivery.
   Future<Map<String, dynamic>> retryDelivery(String deliveryId) async {
-    return _post('/api/v1/deliveries/$deliveryId/retry', {});
+    return _post('/api/v1/deliveries/${_seg(deliveryId)}/retry', {});
   }
 
   // ── Dead Letters ──────────────────────────────────────────────────────
@@ -215,17 +223,17 @@ class JobcelisClient {
 
   /// Get dead letter details.
   Future<Map<String, dynamic>> getDeadLetter(String deadLetterId) async {
-    return _get('/api/v1/dead-letters/$deadLetterId');
+    return _get('/api/v1/dead-letters/${_seg(deadLetterId)}');
   }
 
   /// Retry a dead letter.
   Future<Map<String, dynamic>> retryDeadLetter(String deadLetterId) async {
-    return _post('/api/v1/dead-letters/$deadLetterId/retry', {});
+    return _post('/api/v1/dead-letters/${_seg(deadLetterId)}/retry', {});
   }
 
   /// Mark a dead letter as resolved.
   Future<Map<String, dynamic>> resolveDeadLetter(String deadLetterId) async {
-    return _patch('/api/v1/dead-letters/$deadLetterId/resolve', {});
+    return _patch('/api/v1/dead-letters/${_seg(deadLetterId)}/resolve', {});
   }
 
   // ── Replays ───────────────────────────────────────────────────────────
@@ -244,12 +252,12 @@ class JobcelisClient {
 
   /// Get replay details.
   Future<Map<String, dynamic>> getReplay(String replayId) async {
-    return _get('/api/v1/replays/$replayId');
+    return _get('/api/v1/replays/${_seg(replayId)}');
   }
 
   /// Cancel a replay.
   Future<void> cancelReplay(String replayId) async {
-    await _delete('/api/v1/replays/$replayId');
+    await _delete('/api/v1/replays/${_seg(replayId)}');
   }
 
   // ── Jobs ──────────────────────────────────────────────────────────────
@@ -268,22 +276,22 @@ class JobcelisClient {
 
   /// Get job details.
   Future<Map<String, dynamic>> getJob(String jobId) async {
-    return _get('/api/v1/jobs/$jobId');
+    return _get('/api/v1/jobs/${_seg(jobId)}');
   }
 
   /// Update a scheduled job.
   Future<Map<String, dynamic>> updateJob(String jobId, Map<String, dynamic> data) async {
-    return _patch('/api/v1/jobs/$jobId', data);
+    return _patch('/api/v1/jobs/${_seg(jobId)}', data);
   }
 
   /// Delete a scheduled job.
   Future<void> deleteJob(String jobId) async {
-    await _delete('/api/v1/jobs/$jobId');
+    await _delete('/api/v1/jobs/${_seg(jobId)}');
   }
 
   /// List runs for a scheduled job.
   Future<Map<String, dynamic>> listJobRuns(String jobId, {int limit = 50}) async {
-    return _get('/api/v1/jobs/$jobId/runs', params: {'limit': '$limit'});
+    return _get('/api/v1/jobs/${_seg(jobId)}/runs', params: {'limit': '$limit'});
   }
 
   /// Preview next occurrences for a cron expression.
@@ -293,9 +301,20 @@ class JobcelisClient {
 
   // ── Pipelines ─────────────────────────────────────────────────────────
 
-  /// Create an event pipeline.
-  Future<Map<String, dynamic>> createPipeline(String name, List<String> topics, List<Map<String, dynamic>> steps) async {
-    return _post('/api/v1/pipelines', {'name': name, 'topics': topics, 'steps': steps});
+  /// Create an event pipeline. The API requires [webhookId]: the webhook that
+  /// receives the events the pipeline lets through.
+  Future<Map<String, dynamic>> createPipeline(
+    String name,
+    List<String> topics,
+    List<Map<String, dynamic>> steps, {
+    String? webhookId,
+  }) async {
+    return _post('/api/v1/pipelines', {
+      'name': name,
+      'topics': topics,
+      'steps': steps,
+      if (webhookId != null) 'webhook_id': webhookId,
+    });
   }
 
   /// List pipelines.
@@ -305,22 +324,22 @@ class JobcelisClient {
 
   /// Get pipeline details.
   Future<Map<String, dynamic>> getPipeline(String pipelineId) async {
-    return _get('/api/v1/pipelines/$pipelineId');
+    return _get('/api/v1/pipelines/${_seg(pipelineId)}');
   }
 
   /// Update a pipeline.
   Future<Map<String, dynamic>> updatePipeline(String pipelineId, Map<String, dynamic> data) async {
-    return _patch('/api/v1/pipelines/$pipelineId', data);
+    return _patch('/api/v1/pipelines/${_seg(pipelineId)}', data);
   }
 
   /// Delete a pipeline.
   Future<void> deletePipeline(String pipelineId) async {
-    await _delete('/api/v1/pipelines/$pipelineId');
+    await _delete('/api/v1/pipelines/${_seg(pipelineId)}');
   }
 
   /// Test a pipeline with a sample payload.
   Future<Map<String, dynamic>> testPipeline(String pipelineId, Map<String, dynamic> payload) async {
-    return _post('/api/v1/pipelines/$pipelineId/test', payload);
+    return _post('/api/v1/pipelines/${_seg(pipelineId)}/test', {'payload': payload});
   }
 
   // ── Event Schemas ─────────────────────────────────────────────────────
@@ -337,17 +356,17 @@ class JobcelisClient {
 
   /// Get event schema details.
   Future<Map<String, dynamic>> getEventSchema(String schemaId) async {
-    return _get('/api/v1/event-schemas/$schemaId');
+    return _get('/api/v1/event-schemas/${_seg(schemaId)}');
   }
 
   /// Update an event schema.
   Future<Map<String, dynamic>> updateEventSchema(String schemaId, Map<String, dynamic> data) async {
-    return _patch('/api/v1/event-schemas/$schemaId', data);
+    return _patch('/api/v1/event-schemas/${_seg(schemaId)}', data);
   }
 
   /// Delete an event schema.
   Future<void> deleteEventSchema(String schemaId) async {
-    await _delete('/api/v1/event-schemas/$schemaId');
+    await _delete('/api/v1/event-schemas/${_seg(schemaId)}');
   }
 
   /// Validate a payload against the schema for a topic.
@@ -371,12 +390,12 @@ class JobcelisClient {
 
   /// Delete a sandbox endpoint.
   Future<void> deleteSandboxEndpoint(String endpointId) async {
-    await _delete('/api/v1/sandbox-endpoints/$endpointId');
+    await _delete('/api/v1/sandbox-endpoints/${_seg(endpointId)}');
   }
 
   /// List requests received by a sandbox endpoint.
   Future<Map<String, dynamic>> listSandboxRequests(String endpointId, {int limit = 50}) async {
-    return _get('/api/v1/sandbox-endpoints/$endpointId/requests', params: {'limit': '$limit'});
+    return _get('/api/v1/sandbox-endpoints/${_seg(endpointId)}/requests', params: {'limit': '$limit'});
   }
 
   // ── Analytics ─────────────────────────────────────────────────────────
@@ -454,44 +473,44 @@ class JobcelisClient {
 
   /// Get project by ID.
   Future<Map<String, dynamic>> getProjectById(String projectId) async {
-    return _get('/api/v1/projects/$projectId');
+    return _get('/api/v1/projects/${_seg(projectId)}');
   }
 
   /// Update a project by ID.
   Future<Map<String, dynamic>> updateProjectById(String projectId, Map<String, dynamic> data) async {
-    return _patch('/api/v1/projects/$projectId', data);
+    return _patch('/api/v1/projects/${_seg(projectId)}', data);
   }
 
   /// Delete a project.
   Future<void> deleteProject(String projectId) async {
-    await _delete('/api/v1/projects/$projectId');
+    await _delete('/api/v1/projects/${_seg(projectId)}');
   }
 
   /// Set a project as the default.
   Future<Map<String, dynamic>> setDefaultProject(String projectId) async {
-    return _patch('/api/v1/projects/$projectId/default', {});
+    return _patch('/api/v1/projects/${_seg(projectId)}/default', {});
   }
 
   // ── Teams ─────────────────────────────────────────────────────────────
 
   /// List members of a project.
   Future<Map<String, dynamic>> listMembers(String projectId) async {
-    return _get('/api/v1/projects/$projectId/members');
+    return _get('/api/v1/projects/${_seg(projectId)}/members');
   }
 
   /// Add a member to a project.
-  Future<Map<String, dynamic>> addMember(String projectId, String email, {String role = 'member'}) async {
-    return _post('/api/v1/projects/$projectId/members', {'email': email, 'role': role});
+  Future<Map<String, dynamic>> addMember(String projectId, String email, {String role = 'viewer'}) async {
+    return _post('/api/v1/projects/${_seg(projectId)}/members', {'email': email, 'role': role});
   }
 
   /// Update a member's role.
   Future<Map<String, dynamic>> updateMember(String projectId, String memberId, String role) async {
-    return _patch('/api/v1/projects/$projectId/members/$memberId', {'role': role});
+    return _patch('/api/v1/projects/${_seg(projectId)}/members/${_seg(memberId)}', {'role': role});
   }
 
   /// Remove a member from a project.
   Future<void> removeMember(String projectId, String memberId) async {
-    await _delete('/api/v1/projects/$projectId/members/$memberId');
+    await _delete('/api/v1/projects/${_seg(projectId)}/members/${_seg(memberId)}');
   }
 
   // ── Invitations ───────────────────────────────────────────────────────
@@ -503,12 +522,12 @@ class JobcelisClient {
 
   /// Accept an invitation.
   Future<Map<String, dynamic>> acceptInvitation(String invitationId) async {
-    return _post('/api/v1/invitations/$invitationId/accept', {});
+    return _post('/api/v1/invitations/${_seg(invitationId)}/accept', {});
   }
 
   /// Reject an invitation.
   Future<Map<String, dynamic>> rejectInvitation(String invitationId) async {
-    return _post('/api/v1/invitations/$invitationId/reject', {});
+    return _post('/api/v1/invitations/${_seg(invitationId)}/reject', {});
   }
 
   // ── Audit ─────────────────────────────────────────────────────────────
@@ -532,7 +551,7 @@ class JobcelisClient {
 
   /// Revoke an embed token.
   Future<void> revokeEmbedToken(String id) async {
-    await _delete('/api/v1/embed/tokens/$id');
+    await _delete('/api/v1/embed/tokens/${_seg(id)}');
   }
 
   // ── Notification Channels ────────────────────────────────────────────
@@ -588,7 +607,7 @@ class JobcelisClient {
 
   /// Accept consent for a specific purpose.
   Future<Map<String, dynamic>> acceptConsent(String purpose) async {
-    return _post('/api/v1/me/consents/$purpose/accept', {});
+    return _post('/api/v1/me/consents/${_seg(purpose)}/accept', {});
   }
 
   /// Export all personal data (GDPR data portability).
@@ -596,9 +615,9 @@ class JobcelisClient {
     return _get('/api/v1/me/data');
   }
 
-  /// Request restriction of data processing.
-  Future<Map<String, dynamic>> restrictProcessing() async {
-    return _post('/api/v1/me/restrict', {});
+  /// Request restriction of data processing. The API requires the account [password].
+  Future<Map<String, dynamic>> restrictProcessing(String password) async {
+    return _post('/api/v1/me/restrict', {'password': password});
   }
 
   /// Lift restriction on data processing.
@@ -625,7 +644,7 @@ class JobcelisClient {
 
   /// Update retention policy.
   Future<Map<String, dynamic>> updateRetentionPolicy(Map<String, dynamic> policy) async {
-    return _patch('/api/v1/retention', policy);
+    return _patch('/api/v1/retention', {'retention_policy': policy});
   }
 
   /// Preview a purge operation.
@@ -645,9 +664,10 @@ class JobcelisClient {
     return _get('/health');
   }
 
-  /// Get platform status.
+  /// Get platform status. `/status` is an HTML page, so this reads the JSON
+  /// health endpoint (`status` is "healthy", "degraded" or "unhealthy").
   Future<Map<String, dynamic>> status() async {
-    return _get('/status');
+    return _get('/health');
   }
 
   // ── Private HTTP helpers ──────────────────────────────────────────────
@@ -742,10 +762,10 @@ class JobcelisClient {
       try {
         final request = http.Request(method, uri)..headers.addAll(headers);
         if (body != null) request.body = body;
-        response = await http.Response.fromStream(await _httpClient.send(request));
+        response = await _sendOnce(request).timeout(timeout);
       } on Exception {
         // Exceptions from the HTTP client are transport failures (connection
-        // refused/reset, DNS, TLS, timeouts).
+        // refused/reset, DNS, TLS) and TimeoutException from [timeout].
         if (!retryOnNetworkError || attempt >= maxRetries) rethrow;
         await Future<void>.delayed(_backoff(attempt + 1));
         continue;
@@ -756,6 +776,10 @@ class JobcelisClient {
       }
       await Future<void>.delayed(_retryAfter(response) ?? _backoff(attempt + 1));
     }
+  }
+
+  Future<http.Response> _sendOnce(http.Request request) async {
+    return http.Response.fromStream(await _httpClient.send(request));
   }
 
   /// Delay before retry [n] (1-based): `min(30 s, base * 2^(n-1))` ± 20 % jitter.
@@ -827,6 +851,10 @@ class JobcelisClient {
     final decoded = jsonDecode(response.body);
     return decoded is Map<String, dynamic> ? decoded : {};
   }
+
+  /// Percent-encodes a value interpolated into a URL path, so IDs containing
+  /// `/`, `?` or spaces cannot change the route.
+  static String _seg(String value) => Uri.encodeComponent(value);
 
   Uri _buildUri(String path, Map<String, String>? params) {
     final base = Uri.parse('$_baseURL$path');
